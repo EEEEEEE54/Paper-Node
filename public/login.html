@@ -1,0 +1,137 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Ghost Login</title>
+    <style>
+      :root {
+        color-scheme: dark;
+      }
+      body {
+        margin: 0;
+        min-height: 100vh;
+        font-family: Arial, Helvetica, sans-serif;
+        background:
+          radial-gradient(circle at top left, #3a4170, transparent 40%),
+          radial-gradient(circle at bottom right, #2f1f49, transparent 40%),
+          #0f1220;
+        color: #f5f7ff;
+        display: grid;
+        place-items: center;
+      }
+      .overlay {
+        position: fixed;
+        inset: 0;
+        background: rgba(3, 7, 20, 0.62);
+        backdrop-filter: blur(5px);
+        display: grid;
+        place-items: center;
+        padding: 1rem;
+      }
+      .popup {
+        width: min(430px, 100%);
+        background: rgba(18, 22, 35, 0.96);
+        border: 1px solid rgba(255, 255, 255, 0.1);
+        border-radius: 14px;
+        padding: 1.5rem;
+        box-shadow: 0 20px 45px rgba(0, 0, 0, 0.5);
+      }
+      h1 {
+        margin: 0 0 0.35rem;
+      }
+      p {
+        margin: 0 0 1rem;
+        color: #bbc4e6;
+      }
+      label {
+        display: block;
+        margin-top: 0.9rem;
+        margin-bottom: 0.35rem;
+        font-size: 0.92rem;
+      }
+      input {
+        width: 100%;
+        box-sizing: border-box;
+        padding: 0.72rem;
+        border-radius: 8px;
+        border: 1px solid #4d5574;
+        background: #0d1020;
+        color: #fff;
+      }
+      button {
+        margin-top: 1rem;
+        width: 100%;
+        border: none;
+        border-radius: 8px;
+        background: #6b6dff;
+        color: #fff;
+        font-weight: 600;
+        padding: 0.76rem;
+        cursor: pointer;
+      }
+      .error {
+        color: #ff8f8f;
+        min-height: 1.2rem;
+        margin-top: 0.75rem;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="overlay" role="dialog" aria-modal="true" aria-labelledby="login-title">
+      <main class="popup">
+        <h1 id="login-title">Login required</h1>
+        <p>Enter your username and password to continue.</p>
+        <form id="login-form">
+          <label for="username">Username</label>
+          <input id="username" name="username" autocomplete="username" required />
+
+          <label for="password">Password</label>
+          <input id="password" name="password" type="password" autocomplete="current-password" required />
+
+          <button type="submit">Login</button>
+          <div id="error" class="error" aria-live="polite"></div>
+        </form>
+      </main>
+    </div>
+
+    <script>
+      const form = document.getElementById("login-form");
+      const errorMessage = document.getElementById("error");
+      const usernameInput = document.getElementById("username");
+      const params = new URLSearchParams(window.location.search);
+      const returnToParam = params.get("returnTo");
+      const returnTo = returnToParam && returnToParam.startsWith("/") ? returnToParam : "/";
+
+      usernameInput.focus();
+
+      form.addEventListener("submit", async (event) => {
+        event.preventDefault();
+        errorMessage.textContent = "";
+
+        const formData = new FormData(form);
+        const payload = {
+          username: formData.get("username"),
+          password: formData.get("password"),
+        };
+
+        try {
+          const response = await fetch("/api/login", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(payload),
+          });
+
+          if (!response.ok) {
+            errorMessage.textContent = "Invalid username or password.";
+            return;
+          }
+
+          window.location.replace(returnTo);
+        } catch (_error) {
+          errorMessage.textContent = "Could not reach server. Try again.";
+        }
+      });
+    </script>
+  </body>
+</html>
