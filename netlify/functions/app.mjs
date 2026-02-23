@@ -7,24 +7,112 @@ const publicDir = path.join(rootDir, "public");
 const SESSION_TTL_MS = 1000 * 60 * 60 * 12;
 const SECRET = process.env.GHOST_SESSION_SECRET || "change-this-netlify-secret";
 
-const defaultAccounts = {
-  [process.env.GHOST_ADMIN_USERNAME || "admin"]: {
-    password: process.env.GHOST_ADMIN_PASSWORD || "change-me-now",
-    role: "admin",
-    disabled: false,
-    expiresAt: null,
-  },
-};
+const accountStore = new Map();
 
-const configuredAccounts = (() => {
-  try {
-    return process.env.GHOST_ACCOUNTS_JSON
-      ? JSON.parse(process.env.GHOST_ACCOUNTS_JSON)
-      : defaultAccounts;
-  } catch {
-    return defaultAccounts;
+function hashPassword(password, salt = crypto.randomBytes(16).toString("hex")) {
+  const passwordHash = crypto.scryptSync(password, salt, 64).toString("hex");
+  return { salt, passwordHash };
+}
+
+function verifyPassword(password, salt, expectedHash) {
+  const calculated = crypto.scryptSync(password, salt, 64).toString("hex");
+  const left = Buffer.from(calculated, "hex");
+  const right = Buffer.from(expectedHash, "hex");
+  if (left.length !== right.length) return false;
+  return crypto.timingSafeEqual(left, right);
+}
+
+function isValidUsername(username) {
+  return /^[a-zA-Z0-9_.-]{3,32}$/.test(username);
+}
+
+function now() {
+  return Date.now();
+}
+
+function isExpired(account) {
+  return Number.isFinite(account.expiresAt) && account.expiresAt <= now();
+}
+
+function isActive(account) {
+  return Boolean(account) && !account.disabled && !isExpired(account);
+}
+
+function parseConfiguredAccounts() {
+  const fallbackUsername = process.env.GHOST_ADMIN_USERNAME || "admin";
+  const fallbackPassword = process.env.GHOST_ADMIN_PASSWORD || "change-me-now";
+
+  let input = {
+    [fallbackUsername]: {
+      password: fallbackPassword,
+      role: "admin",
+      disabled: false,
+      expiresAt: null,
+    },
+  };
+
+  if (process.env.GHOST_ACCOUNTS_JSON) {
+    try {
+      const parsed = JSON.parse(process.env.GHOST_ACCOUNTS_JSON);
+      if (parsed && typeof parsed === "object") {
+        input = parsed;
+      }
+    } catch {
+      // keep fallback
+    }
   }
-})();
+
+  for (const [username, cfg] of Object.entries(input)) {
+    if (!isValidUsername(username)) continue;
+    const role = cfg?.role === "admin" ? "admin" : "user";
+    const disabled = Boolean(cfg?.disabled);
+    const expiresAt = Number.isFinite(cfg?.expiresAt) ? Number(cfg.expiresAt) : null;
+
+    if (typeof cfg?.passwordHash === "string" && typeof cfg?.salt === "string") {
+      accountStore.set(username, {
+        username,
+        role,
+        disabled,
+        expiresAt,
+        salt: cfg.salt,
+        passwordHash: cfg.passwordHash,
+        tokenVersion: Number.isFinite(cfg?.tokenVersion) ? Number(cfg.tokenVersion) : 1,
+        createdAt: Number.isFinite(cfg?.createdAt) ? Number(cfg.createdAt) : now(),
+      });
+      continue;
+    }
+
+    const password = typeof cfg?.password === "string" ? cfg.password : null;
+    if (!password) continue;
+    const { salt, passwordHash } = hashPassword(password);
+    accountStore.set(username, {
+      username,
+      role,
+      disabled,
+      expiresAt,
+      salt,
+      passwordHash,
+      tokenVersion: 1,
+      createdAt: now(),
+    });
+  }
+
+  if (accountStore.size === 0) {
+    const { salt, passwordHash } = hashPassword(fallbackPassword);
+    accountStore.set(fallbackUsername, {
+      username: fallbackUsername,
+      role: "admin",
+      disabled: false,
+      expiresAt: null,
+      salt,
+      passwordHash,
+      tokenVersion: 1,
+      createdAt: now(),
+    });
+  }
+}
+
+parseConfiguredAccounts();
 
 function parseCookies(cookieHeader = "") {
   return cookieHeader
@@ -51,11 +139,12 @@ function sign(value) {
   return b64url(crypto.createHmac("sha256", SECRET).update(value).digest());
 }
 
-function createToken(username, role) {
+function createToken(account) {
   const payload = {
-    username,
-    role,
-    exp: Date.now() + SESSION_TTL_MS,
+    username: account.username,
+    role: account.role,
+    tv: account.tokenVersion,
+    exp: now() + SESSION_TTL_MS,
   };
   const data = b64url(JSON.stringify(payload));
   return `${data}.${sign(data)}`;
@@ -68,13 +157,13 @@ function verifyToken(token) {
 
   try {
     const payload = JSON.parse(Buffer.from(data.replace(/-/g, "+").replace(/_/g, "/"), "base64").toString("utf8"));
-    if (!payload?.username || payload.exp <= Date.now()) return null;
+    if (!payload?.username || payload.exp <= now()) return null;
 
-    const account = configuredAccounts[payload.username];
-    if (!account || account.disabled) return null;
-    if (Number.isFinite(account.expiresAt) && account.expiresAt <= Date.now()) return null;
+    const account = accountStore.get(payload.username);
+    if (!isActive(account)) return null;
+    if (payload.tv !== account.tokenVersion) return null;
 
-    return { username: payload.username, role: payload.role || account.role || "user" };
+    return { username: account.username, role: account.role };
   } catch {
     return null;
   }
@@ -100,6 +189,14 @@ function json(statusCode, value, headers = {}) {
 
 function redirect(location, headers = {}) {
   return response(302, "", { Location: location, ...headers });
+}
+
+function clearCookieHeader() {
+  return "ghost_session=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0";
+}
+
+function sessionCookieHeader(token) {
+  return `ghost_session=${encodeURIComponent(token)}; HttpOnly; SameSite=Strict; Path=/; Max-Age=${Math.floor(SESSION_TTL_MS / 1000)}`;
 }
 
 async function serveFile(relativePath) {
@@ -129,8 +226,7 @@ async function serveFile(relativePath) {
 }
 
 function normalizePath(rawPath = "/") {
-  const withoutFunctionPrefix = rawPath.replace(/^\/.netlify\/functions\/app/, "") || "/";
-  return withoutFunctionPrefix;
+  return rawPath.replace(/^\/.netlify\/functions\/app/, "") || "/";
 }
 
 function routeToPublicFile(pathname) {
@@ -159,11 +255,42 @@ function routeToPublicFile(pathname) {
   };
 
   if (aliases[pathname]) return aliases[pathname];
-
   if (pathname.startsWith("/assets/")) return pathname.slice(1);
   if (pathname.startsWith("/u/")) return pathname.slice(1);
-
   if (pathname.endsWith(".html")) return pathname.slice(1);
+  return null;
+}
+
+function sanitizeAccount(account) {
+  return {
+    username: account.username,
+    role: account.role,
+    disabled: account.disabled,
+    expiresAt: account.expiresAt,
+    createdAt: account.createdAt,
+  };
+}
+
+function parseBody(event) {
+  if (!event.body) return {};
+  try {
+    return JSON.parse(event.body);
+  } catch {
+    return {};
+  }
+}
+
+function requireAuth(currentUser) {
+  if (!currentUser) {
+    return json(401, { error: "Authentication required" });
+  }
+  return null;
+}
+
+function requireAdmin(currentUser) {
+  if (!currentUser || currentUser.role !== "admin") {
+    return json(403, { error: "Admin access required" });
+  }
   return null;
 }
 
@@ -174,31 +301,21 @@ export async function handler(event) {
   const currentUser = verifyToken(cookies.ghost_session);
 
   if (pathname === "/api/login" && method === "POST") {
-    const payload = event.body ? JSON.parse(event.body) : {};
+    const payload = parseBody(event);
     const username = typeof payload.username === "string" ? payload.username : "";
     const password = typeof payload.password === "string" ? payload.password : "";
-    const account = configuredAccounts[username];
+    const account = accountStore.get(username);
 
-    if (!account || account.password !== password || account.disabled) {
-      return json(401, { error: "Invalid username or password" }, {
-        "Set-Cookie": "ghost_session=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0",
-      });
+    if (!isActive(account) || !verifyPassword(password, account.salt, account.passwordHash)) {
+      return json(401, { error: "Invalid username or password" }, { "Set-Cookie": clearCookieHeader() });
     }
 
-    if (Number.isFinite(account.expiresAt) && account.expiresAt <= Date.now()) {
-      return json(401, { error: "Account expired" });
-    }
-
-    const token = createToken(username, account.role || "user");
-    return json(200, { ok: true }, {
-      "Set-Cookie": `ghost_session=${encodeURIComponent(token)}; HttpOnly; SameSite=Strict; Path=/; Max-Age=${Math.floor(SESSION_TTL_MS / 1000)}`,
-    });
+    const token = createToken(account);
+    return json(200, { ok: true }, { "Set-Cookie": sessionCookieHeader(token) });
   }
 
   if (pathname === "/api/logout" && method === "POST") {
-    return json(200, { ok: true }, {
-      "Set-Cookie": "ghost_session=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0",
-    });
+    return json(200, { ok: true }, { "Set-Cookie": clearCookieHeader() });
   }
 
   if (pathname === "/api/session" && method === "GET") {
@@ -206,9 +323,147 @@ export async function handler(event) {
     return json(200, { authenticated: true, user: currentUser });
   }
 
+  if (pathname === "/api/admin/accounts" && method === "GET") {
+    const authError = requireAdmin(currentUser);
+    if (authError) return authError;
+    const list = Array.from(accountStore.values()).map(sanitizeAccount);
+    return json(200, list);
+  }
+
+  if (pathname === "/api/admin/accounts" && method === "POST") {
+    const authError = requireAdmin(currentUser);
+    if (authError) return authError;
+
+    const payload = parseBody(event);
+    const username = payload.username;
+    const password = payload.password;
+    const role = payload.role === "admin" ? "admin" : "user";
+    const expiresAt = payload.expiresAt === null || payload.expiresAt === "" || payload.expiresAt === undefined
+      ? null
+      : Number(payload.expiresAt);
+
+    if (!isValidUsername(username)) {
+      return json(400, { error: "Username must be 3-32 chars using letters, numbers, _, -, ." });
+    }
+    if (typeof password !== "string" || password.length < 8) {
+      return json(400, { error: "Password must be at least 8 characters" });
+    }
+    if (expiresAt !== null && !Number.isFinite(expiresAt)) {
+      return json(400, { error: "expiresAt must be a timestamp or empty" });
+    }
+    if (accountStore.has(username)) {
+      return json(409, { error: "Account already exists" });
+    }
+
+    const { salt, passwordHash } = hashPassword(password);
+    accountStore.set(username, {
+      username,
+      role,
+      disabled: false,
+      expiresAt,
+      salt,
+      passwordHash,
+      tokenVersion: 1,
+      createdAt: now(),
+    });
+
+    return json(201, { ok: true });
+  }
+
+  const adminAccountMatch = pathname.match(/^\/api\/admin\/accounts\/([^/]+)$/);
+  if (adminAccountMatch && method === "PATCH") {
+    const authError = requireAdmin(currentUser);
+    if (authError) return authError;
+
+    const username = decodeURIComponent(adminAccountMatch[1]);
+    const account = accountStore.get(username);
+    if (!account) {
+      return json(404, { error: "Account not found" });
+    }
+
+    const payload = parseBody(event);
+    if (payload.password !== undefined) {
+      if (typeof payload.password !== "string" || payload.password.length < 8) {
+        return json(400, { error: "Password must be at least 8 characters" });
+      }
+      const { salt, passwordHash } = hashPassword(payload.password);
+      account.salt = salt;
+      account.passwordHash = passwordHash;
+      account.tokenVersion += 1;
+    }
+
+    if (payload.disabled !== undefined) {
+      account.disabled = Boolean(payload.disabled);
+      if (account.disabled) {
+        account.tokenVersion += 1;
+      }
+    }
+
+    if (payload.expiresAt !== undefined) {
+      if (payload.expiresAt === null || payload.expiresAt === "") {
+        account.expiresAt = null;
+      } else {
+        const ts = Number(payload.expiresAt);
+        if (!Number.isFinite(ts)) {
+          return json(400, { error: "expiresAt must be a timestamp" });
+        }
+        account.expiresAt = ts;
+        if (isExpired(account)) {
+          account.tokenVersion += 1;
+        }
+      }
+    }
+
+    if (payload.role !== undefined) {
+      if (payload.role !== "admin" && payload.role !== "user") {
+        return json(400, { error: "Invalid role" });
+      }
+      account.role = payload.role;
+      account.tokenVersion += 1;
+    }
+
+    accountStore.set(username, account);
+    return json(200, { ok: true });
+  }
+
+  if (adminAccountMatch && method === "DELETE") {
+    const authError = requireAdmin(currentUser);
+    if (authError) return authError;
+
+    const username = decodeURIComponent(adminAccountMatch[1]);
+    if (!accountStore.has(username)) {
+      return json(404, { error: "Account not found" });
+    }
+    accountStore.delete(username);
+    return json(200, { ok: true });
+  }
+
+  const adminLogoutMatch = pathname.match(/^\/api\/admin\/accounts\/([^/]+)\/logout$/);
+  if (adminLogoutMatch && method === "POST") {
+    const authError = requireAdmin(currentUser);
+    if (authError) return authError;
+
+    const username = decodeURIComponent(adminLogoutMatch[1]);
+    const account = accountStore.get(username);
+    if (!account) {
+      return json(404, { error: "Account not found" });
+    }
+    account.tokenVersion += 1;
+    accountStore.set(username, account);
+    return json(200, { ok: true });
+  }
+
   if (pathname.startsWith("/api/")) {
-    if (!currentUser) return json(401, { error: "Authentication required" });
+    const authError = requireAuth(currentUser);
+    if (authError) return authError;
     return json(501, { error: "This API route is not available in Netlify function mode." });
+  }
+
+  if (pathname === "/admin" && (!currentUser || currentUser.role !== "admin")) {
+    if (!currentUser) {
+      return redirect(`/login?returnTo=${encodeURIComponent("/admin")}`);
+    }
+    return response(403, "Admin access required", { "Content-Type": "text/plain; charset=utf-8" });
   }
 
   const publicNoAuth = new Set(["/login", "/login.html", "/404.html", "/blocked.html"]);

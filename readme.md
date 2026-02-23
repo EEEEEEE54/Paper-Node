@@ -74,6 +74,8 @@ Optional multi-account JSON (for Netlify function mode):
 
 - `GHOST_ACCOUNTS_JSON`
 
+Netlify function account changes made in `/admin` are runtime-only (memory for that function instance). For permanent account data, keep `GHOST_ACCOUNTS_JSON` updated in Netlify environment settings.
+
 Example:
 
 ```json
