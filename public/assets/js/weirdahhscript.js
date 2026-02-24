@@ -1,68 +1,59 @@
 let rgAPI = '/api/rg/v1/'
-addEventListener('DOMContentLoaded', async (event) => {
-    const gData = await fetch(rgAPI)
-        .then((response) => response.text())
-        .then((text) => {
-            return JSON.parse(text)
-        })
-    gData.forEach((game) => {
-        const i = document.getElementById('trendingg')
-        const g = document.createElement('div')
-        g.classList.add('g-icon')
-        g.setAttribute(
-            'onclick',
-            "localStorage.setItem('url', '" +
-                __uv$config.prefix +
-                __uv$config.encodeUrl(game.href) +
-                "'); window.location.href = '/q/'"
-        )
-
-        const img = document.createElement('button')
-        const image = document.createElement('img')
-        image.src = game.img
-
-        const gname = document.createElement('p')
-        gname.innerText = game.name
-
-        img.appendChild(image)
-        g.appendChild(img)
-        g.appendChild(gname)
-        i.appendChild(g)
-    })
-})
 let raAPI = '/api/ra/v1/'
-addEventListener('DOMContentLoaded', async (event) => {
-    const gData = await fetch(raAPI)
-        .then((response) => response.text())
-        .then((text) => {
-            return JSON.parse(text)
-        })
-    gData.forEach((game) => {
-        const i = document.getElementById('trendinga')
 
-        const g = document.createElement('div')
-        g.classList.add('g-icon')
-        g.setAttribute(
-            'onclick',
-            "localStorage.setItem('url', '" +
-                __uv$config.prefix +
-                __uv$config.encodeUrl(game.href) +
-                "'); window.location.href = '/q/'"
-        )
+function routeToGame(game) {
+    const encoded = __uv$config.prefix + __uv$config.encodeUrl(game.href)
+    localStorage.setItem('url', encoded)
+    window.location.href = '/q/'
+}
 
-        const img = document.createElement('button')
-        const image = document.createElement('img')
-        image.src = game.img
+function createGameCard(game) {
+    const g = document.createElement('div')
+    g.classList.add('g-icon')
 
-        const gname = document.createElement('p')
-        gname.innerText = game.name
+    const imgButton = document.createElement('button')
+    imgButton.type = 'button'
 
-        img.appendChild(image)
-        g.appendChild(img)
-        g.appendChild(gname)
-        i.appendChild(g)
+    const image = document.createElement('img')
+    image.src = game.img
+    image.alt = game.name
+
+    const gname = document.createElement('p')
+    gname.innerText = game.name
+
+    imgButton.appendChild(image)
+    g.appendChild(imgButton)
+    g.appendChild(gname)
+
+    g.addEventListener('click', () => routeToGame(game))
+    imgButton.addEventListener('click', (event) => {
+        event.preventDefault()
+        event.stopPropagation()
+        routeToGame(game)
     })
+
+    return g
+}
+
+async function loadCards(endpoint, containerId) {
+    const data = await fetch(endpoint)
+        .then((response) => response.text())
+        .then((text) => JSON.parse(text))
+
+    const container = document.getElementById(containerId)
+    data.forEach((game) => {
+        container.appendChild(createGameCard(game))
+    })
+}
+
+addEventListener('DOMContentLoaded', async () => {
+    await loadCards(rgAPI, 'trendingg')
 })
+
+addEventListener('DOMContentLoaded', async () => {
+    await loadCards(raAPI, 'trendinga')
+})
+
 function getRandomInt(min, max) {
     min = Math.ceil(min)
     max = Math.floor(max)

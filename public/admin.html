@@ -1,0 +1,215 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Ghost Account Control</title>
+    <style>
+      :root { color-scheme: dark; }
+      body {
+        margin: 0;
+        font-family: Inter, Arial, sans-serif;
+        background: #0d1220;
+        color: #ecf0ff;
+      }
+      .wrap {
+        max-width: 980px;
+        margin: 2rem auto;
+        padding: 0 1rem;
+      }
+      .card {
+        background: #161c2d;
+        border: 1px solid #2e3650;
+        border-radius: 12px;
+        padding: 1rem;
+        margin-bottom: 1rem;
+      }
+      h1 { margin: 0 0 1rem; }
+      h2 { margin-top: 0; }
+      .row { display: grid; grid-template-columns: repeat(4, 1fr); gap: .6rem; }
+      input, select, button {
+        background: #0f1424;
+        color: #fff;
+        border: 1px solid #3b4566;
+        border-radius: 8px;
+        padding: .6rem;
+      }
+      button { cursor: pointer; }
+      table { width: 100%; border-collapse: collapse; }
+      th, td { padding: .5rem; border-bottom: 1px solid #2f3650; text-align: left; }
+      .pill { border-radius: 999px; padding: .2rem .55rem; font-size: .8rem; }
+      .ok { background: #1e3e2c; }
+      .bad { background: #4b1f2a; }
+      .muted { color: #9aa7d1; font-size: .9rem; }
+      .actions { display: flex; gap: .4rem; flex-wrap: wrap; }
+      #status { min-height: 1.1rem; }
+      @media (max-width: 760px) { .row { grid-template-columns: 1fr; } }
+    </style>
+  </head>
+  <body>
+    <div class="wrap">
+      <div class="card">
+        <h1>Account Control Panel</h1>
+        <p class="muted">Create, disable, expire, remove users, and force logout sessions.</p>
+        <button id="logout">Logout</button>
+        <div id="status" class="muted"></div>
+      </div>
+
+      <div class="card">
+        <h2>Create Account</h2>
+        <form id="create-form" class="row">
+          <input name="username" placeholder="username" required />
+          <input name="password" type="password" placeholder="password (8+ chars)" required />
+          <select name="role">
+            <option value="user">user</option>
+            <option value="admin">admin</option>
+          </select>
+          <input name="expiresAt" type="datetime-local" title="optional expiry" />
+          <button type="submit">Create</button>
+        </form>
+      </div>
+
+      <div class="card">
+        <h2>Accounts</h2>
+        <table>
+          <thead>
+            <tr>
+              <th>User</th><th>Role</th><th>Status</th><th>Expires</th><th>Actions</th>
+            </tr>
+          </thead>
+          <tbody id="rows"></tbody>
+        </table>
+      </div>
+    </div>
+
+    <script>
+      const rows = document.getElementById("rows");
+      const status = document.getElementById("status");
+      const createForm = document.getElementById("create-form");
+      const logoutBtn = document.getElementById("logout");
+
+      function show(msg, isError = false) {
+        status.textContent = msg;
+        status.style.color = isError ? "#ff9da9" : "#9aa7d1";
+      }
+
+      function toEpoch(value) {
+        if (!value) return null;
+        const ms = new Date(value).getTime();
+        return Number.isFinite(ms) ? ms : null;
+      }
+
+      async function api(url, options = {}) {
+        const res = await fetch(url, {
+          headers: { "Content-Type": "application/json" },
+          ...options,
+        });
+
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) {
+          throw new Error(data.error || "Request failed");
+        }
+        return data;
+      }
+
+      function accountRow(account) {
+        const tr = document.createElement("tr");
+        const expired = Number.isFinite(account.expiresAt) && account.expiresAt <= Date.now();
+        const statusPill = account.disabled || expired
+          ? '<span class="pill bad">blocked</span>'
+          : '<span class="pill ok">active</span>';
+
+        tr.innerHTML = `
+          <td>${account.username}</td>
+          <td>${account.role}</td>
+          <td>${statusPill}</td>
+          <td>${Number.isFinite(account.expiresAt) ? new Date(account.expiresAt).toLocaleString() : "never"}</td>
+          <td class="actions">
+            <button data-act="toggle" data-user="${account.username}" data-disabled="${account.disabled}">${account.disabled ? "Enable" : "Disable"}</button>
+            <button data-act="expire" data-user="${account.username}">Expire now</button>
+            <button data-act="logout" data-user="${account.username}">Force logout</button>
+            <button data-act="delete" data-user="${account.username}">Delete</button>
+          </td>
+        `;
+        return tr;
+      }
+
+      async function refresh() {
+        const list = await api("/api/admin/accounts");
+        rows.innerHTML = "";
+        list.sort((a, b) => a.username.localeCompare(b.username)).forEach((acc) => rows.appendChild(accountRow(acc)));
+      }
+
+      createForm.addEventListener("submit", async (event) => {
+        event.preventDefault();
+        try {
+          const fd = new FormData(createForm);
+          const expiresAt = toEpoch(fd.get("expiresAt"));
+          await api("/api/admin/accounts", {
+            method: "POST",
+            body: JSON.stringify({
+              username: fd.get("username"),
+              password: fd.get("password"),
+              role: fd.get("role"),
+              expiresAt,
+            }),
+          });
+          createForm.reset();
+          show("Account created.");
+          await refresh();
+        } catch (error) {
+          show(error.message, true);
+        }
+      });
+
+      rows.addEventListener("click", async (event) => {
+        const button = event.target.closest("button");
+        if (!button) return;
+
+        const user = button.dataset.user;
+        const action = button.dataset.act;
+
+        try {
+          if (action === "toggle") {
+            const disabled = button.dataset.disabled === "true";
+            await api(`/api/admin/accounts/${encodeURIComponent(user)}`, {
+              method: "PATCH",
+              body: JSON.stringify({ disabled: !disabled }),
+            });
+            show(`${user} ${disabled ? "enabled" : "disabled"}.`);
+          }
+
+          if (action === "expire") {
+            await api(`/api/admin/accounts/${encodeURIComponent(user)}`, {
+              method: "PATCH",
+              body: JSON.stringify({ expiresAt: Date.now() - 1000 }),
+            });
+            show(`${user} expired.`);
+          }
+
+          if (action === "logout") {
+            await api(`/api/admin/accounts/${encodeURIComponent(user)}/logout`, { method: "POST" });
+            show(`${user} sessions cleared.`);
+          }
+
+          if (action === "delete") {
+            if (!confirm(`Delete account ${user}?`)) return;
+            await api(`/api/admin/accounts/${encodeURIComponent(user)}`, { method: "DELETE" });
+            show(`${user} deleted.`);
+          }
+
+          await refresh();
+        } catch (error) {
+          show(error.message, true);
+        }
+      });
+
+      logoutBtn.addEventListener("click", async () => {
+        await fetch("/api/logout", { method: "POST" });
+        location.href = "/login";
+      });
+
+      refresh().catch((error) => show(error.message, true));
+    </script>
+  </body>
+</html>
