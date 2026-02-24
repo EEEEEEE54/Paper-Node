@@ -81,3 +81,14 @@ Example:
 ```json
 {"admin":{"password":"StrongPass123!","role":"admin"},"user1":{"password":"UserPass123!","role":"user","expiresAt":null}}
 ```
+
+
+### Local run / ngrok
+
+Default local port is `3000` (or set `PORT` to override). For ngrok, forward to the same port your server is listening on.
+
+```bash
+PORT=3000 npm start
+# then in another terminal
+ngrok http 3000
+```
