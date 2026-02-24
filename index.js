@@ -12,6 +12,7 @@ import fetch from "node-fetch";
 const bare = createBareServer("/bare/");
 const server = http.createServer();
 const PORT = Number(process.env.PORT || 3000);
+const PORT = 8080;
 const app = express();
 const __dirname = process.cwd();
 
@@ -214,7 +215,6 @@ app.use((req, res, next) => {
     "/404.html",
     "/blocked.html",
     "/favicon.ico",
-    "/health",
   ]);
 
   if (
@@ -437,11 +437,6 @@ app.post("/api/admin/accounts/:username/logout", ensureAdmin, (req, res) => {
   const username = req.params.username;
   clearSessionsForUser(username);
   return res.status(200).json({ ok: true });
-});
-
-
-app.get("/health", (req, res) => {
-  res.status(200).json({ ok: true, port: PORT });
 });
 
 app.get("/", (req, res) => {
