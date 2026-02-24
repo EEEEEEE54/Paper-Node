@@ -11,7 +11,8 @@ import fetch from "node-fetch";
 
 const bare = createBareServer("/bare/");
 const server = http.createServer();
-const SERVER_PORT = Number(process.env.PORT || 3000);
+const PORT = Number(process.env.PORT || 3000);
+const PORT = 8080;
 const app = express();
 const __dirname = process.cwd();
 
@@ -214,7 +215,6 @@ app.use((req, res, next) => {
     "/404.html",
     "/blocked.html",
     "/favicon.ico",
-    "/health",
   ]);
 
   if (
@@ -439,11 +439,6 @@ app.post("/api/admin/accounts/:username/logout", ensureAdmin, (req, res) => {
   return res.status(200).json({ ok: true });
 });
 
-
-app.get("/health", (req, res) => {
-  res.status(200).json({ ok: true, port: SERVER_PORT });
-});
-
 app.get("/", (req, res) => {
   res.sendFile("/public/index.html", { root: __dirname });
 });
@@ -644,8 +639,8 @@ setInterval(() => {
 
 await loadAccounts();
 
-server.listen(SERVER_PORT);
+server.listen(PORT);
 
 server.on("listening", () => {
-  console.log("Ghost Is On http://localhost:" + SERVER_PORT + ":3");
+  console.log("Ghost Is On http://localhost:" + PORT + ":3");
 });
