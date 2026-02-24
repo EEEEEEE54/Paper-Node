@@ -11,6 +11,7 @@ import fetch from "node-fetch";
 
 const bare = createBareServer("/bare/");
 const server = http.createServer();
+const PORT = Number(process.env.PORT || 3000);
 const PORT = 8080;
 const app = express();
 const __dirname = process.cwd();
